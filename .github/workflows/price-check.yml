@@ -1,0 +1,19 @@
+name: price-check
+
+# 장중(평일 09:00~15:40 KST)에 5분마다 알림 조건을 확인한다
+on:
+  schedule:
+    - cron: "*/5 0-6 * * 1-5" # UTC 00:00~06:55 = KST 09:00~15:55
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Call cron endpoint
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl -fsS --max-time 60 -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/cron"
