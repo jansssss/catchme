@@ -3,7 +3,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Chart from "./Chart";
 
 type Alert = { id: number; kind: string; value: number; active: boolean; firedAt: string | null };
-type Phase = "down" | "easing" | "flat" | "up";
+type Phase = "down" | "base" | "up" | "dip";
+type Checks = { lowHold: boolean; lineOk: boolean; above: boolean; aligned: boolean; dip: boolean };
 type Trend = {
   price: number;
   period: number;
@@ -14,7 +15,17 @@ type Trend = {
   phase: Phase;
   days: number;
   daysCapped: boolean;
+  checks: Checks;
+  broke: boolean;
+  sinceLow: number;
+  ma20: number;
+  ma60: number;
+  d20: number;
+  pull: number;
+  volRatio: number | null;
+  stop: number;
   line: number[];
+  prices: number[];
 };
 type Stock = {
   code: string;
@@ -32,11 +43,12 @@ type Log = { id: number; title: string; body: string; created_at: string };
 const fmt = (n: number) => Math.round(n).toLocaleString("ko-KR");
 const pct = (n: number) => `${n > 0 ? "+" : ""}${n.toFixed(2)}%`;
 const tone = (n: number) => (n > 0 ? "up" : n < 0 ? "down" : "flat");
-const PHASES: { key: Phase; label: string; hint: string }[] = [
-  { key: "down", label: "하락", hint: "관망" },
-  { key: "easing", label: "하락 둔화", hint: "지켜보기" },
-  { key: "flat", label: "횡보", hint: "바닥 다지기 · 주목" },
-  { key: "up", label: "상승", hint: "매수 검토" },
+// 떨어지는 동안은 사지 않고 → 바닥을 다지는지 보고 → 추세가 돌아선 뒤 → 눌릴 때 산다
+const PHASES: { key: Phase; label: string; act: string }[] = [
+  { key: "down", label: "하락", act: "사지 않는다" },
+  { key: "base", label: "다지기", act: "지켜보기" },
+  { key: "up", label: "상승 추세", act: "눌림 기다리기" },
+  { key: "dip", label: "눌림목", act: "매수 검토" },
 ];
 
 /** 호가 단위에 맞춰 내림 */
@@ -281,8 +293,13 @@ export default function Page() {
       )}
 
       <p className="foot">
-        추세 국면은 {trendPeriod}일선의 기울기(최근 20거래일 변화율)로 판단합니다 · 하락 = -1% 이하 · 하락 둔화 = 내려가지만 한 달
-        전보다 완만 · 횡보 = ±1% 이내 · 상승 = +1% 이상 · 현재가 위치와 상관없이 선의 모양만 봅니다 · 새 국면이 3거래일 이어지면 전환으로 봅니다
+        단계는 매수 조건 다섯 가지로 정합니다 · ① 신저가 멈춤 = 석 달 최저 종가를 찍고 20거래일 넘게 안 깨짐 · ② {trendPeriod}일선
+        하락 멈춤 = 최근 20거래일 변화율이 -1%보다 큼 · ③ 주가가 {trendPeriod}일선 위 · ④ 상승 추세 확인 = {trendPeriod}일선이 +1% 이상
+        오르고 20일선이 60일선 위 · ⑤ 눌림목 = 20일 고점에서 3% 이상 내려와 20일선 +2% 이내, 60일선은 지킴 · ①②가 되면 다지기,
+        ①~④면 상승 추세, 다섯 개 모두면 눌림목 · 선이 아직 안 내려가도 주가가 선보다 3% 넘게 아래로 무너졌으면 하락으로 봅니다
+        · 새 단계가 3거래일(상승 추세↔눌림목은 2거래일) 이어지면 전환으로 봅니다
+        <br />
+        조건이 맞아도 수익이 보장되지는 않습니다. 손절 기준을 정하고 나눠서 매수하세요.
         <br />
         시세는 네이버 금융 기준이며 장중 약 5분 간격으로 확인합니다. 투자 판단과 책임은 본인에게 있습니다.
       </p>
@@ -553,49 +570,88 @@ function Card({ s, reload, say }: { s: Stock; reload: () => Promise<void>; say: 
 
 function TrendView({ t, alertOn, onBell, onChart }: { t: Trend; alertOn: boolean; onBell: () => void; onChart: () => void }) {
   const idx = PHASES.findIndex((p) => p.key === t.phase);
-  // 기준선을 약 1년치 길게 그리고, 맨 오른쪽 최근 구간을 상자로 강조한다
-  // — 내려오다 눕는지, 고개를 드는지가 선 모양 그대로 보이도록
-  const W = 320, H = 104, PX = 8, PT = 20, PB = 10;
-  const n = t.line.length;
-  const RECENT = Math.min(40, n - 1); // 강조할 최근 구간(약 2달)
-  let lo = Math.min(...t.line), hi = Math.max(...t.line);
-  // 거의 수평인 선이 과장되어 보이지 않도록 세로 범위를 최소 8%로 잡는다
+  // 기준선(굵은 선)과 주가(가는 선)를 약 1년치 같은 눈금에 그리고, 맨 오른쪽 최근 구간을 상자로 강조한다
+  // — 선이 내려오다 눕는지·고개를 드는지, 주가가 선 위인지 아래로 무너졌는지가 그대로 보이도록
+  const W = 320, H = 120, PX = 8, PT = 20, PB = 10;
+  const prices = t.prices?.length ? t.prices : t.line;
+  const n = prices.length;
+  const off = n - t.line.length; // 기준선이 주가보다 짧으면 오른쪽 정렬
+  const RECENT = Math.min(40, t.line.length - 1); // 강조할 최근 구간(약 2달)
+  let lo = Math.min(...t.line, ...prices), hi = Math.max(...t.line, ...prices);
+  // 거의 수평인 흐름이 과장되어 보이지 않도록 세로 범위를 최소 8%로 잡는다
   const mid = (lo + hi) / 2;
   const half = Math.max((hi - lo) / 2, mid * 0.04);
   lo = mid - half;
   hi = mid + half;
   const x = (i: number) => PX + (i / Math.max(1, n - 1)) * (W - 2 * PX);
   const y = (v: number) => PT + (1 - (v - lo) / (hi - lo)) * (H - PT - PB);
-  const seg = (from: number) =>
-    t.line
-      .slice(from)
-      .map((v, i) => `${i ? "L" : "M"}${x(i + from).toFixed(1)},${y(v).toFixed(1)}`)
+  const path = (vs: number[], from: number, to: number, o: number) =>
+    vs
+      .slice(from, to)
+      .map((v, i) => `${i ? "L" : "M"}${x(i + from + o).toFixed(1)},${y(v).toFixed(1)}`)
       .join("");
-  const cutI = n - 1 - RECENT;
-  const dOld = t.line
-    .slice(0, cutI + 1)
-    .map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`)
-    .join("");
-  const dNew = seg(cutI);
-  const boxX = x(cutI) - 3;
-  // 같은 횡보라도 내려와서 누운 것(바닥)과 올라가서 누운 것(고점)은 뜻이 다르다
-  const rawLo = Math.min(...t.line), rawHi = Math.max(...t.line);
-  const pos = rawHi > rawLo ? (t.line[n - 1] - rawLo) / (rawHi - rawLo) : 0.5; // 최근 1년 범위 안에서 선의 현재 높이
-  const hint =
-    t.phase === "flat"
-      ? pos >= 0.6
-        ? "오르던 선이 눕는 중 · 주의"
-        : pos <= 0.4
-          ? "바닥 다지기 · 주목"
-          : "방향 탐색 · 지켜보기"
-      : t.phase === "up"
-        ? t.dist < -3
-          ? "주가는 선 아래 · 주의"
-          : t.days <= 40 && !t.daysCapped && pos <= 0.5
-            ? "바닥에서 돌아서는 중 · 매수 검토"
-            : "상승 지속"
-        : PHASES[idx].hint;
-  const dir = t.slope >= 1 ? "오르는 중" : t.slope <= -1 ? "내려가는 중" : "거의 수평";
+  const cutL = t.line.length - 1 - RECENT;
+  const dOld = path(t.line, 0, cutL + 1, off);
+  const dNew = path(t.line, cutL, t.line.length, off);
+  const dPrice = path(prices, 0, n, 0);
+  const boxX = x(cutL + off) - 3;
+  const c = t.checks;
+  const trendOk = c.lowHold && c.lineOk && c.above && c.aligned; // ①~④
+  const deep = t.price < t.ma60 * 0.97; // 60일선 아래로 깊게 밀림
+  // 지금 왜 이 단계인지 한 줄
+  const why =
+    t.phase === "down"
+      ? !c.lowHold
+        ? `${t.sinceLow === 0 ? "오늘" : `${t.sinceLow}거래일 전에`} 석 달 신저가 · 바닥 확인 전`
+        : !c.lineOk
+          ? `${t.period}일선이 아직 내려가는 중 · 반등해도 기다리기`
+          : `주가가 ${t.period}일선 아래로 무너진 상태 · 싸 보여도 기다리기`
+      : t.phase === "base"
+        ? c.above
+          ? `하락은 멈춤 · ${t.period}일선이 오르기 시작하는지 확인`
+          : `하락은 멈춤 · 주가가 ${t.period}일선 위로 올라설 때까지 대기`
+        : t.phase === "up"
+          ? deep
+            ? "조정이 깊음 · 60일선을 되찾는지 확인"
+            : `추격 매수 금지 · 20일선(${fmt(t.ma20)}원)까지 눌릴 때 검토`
+          : "오르는 추세 안에서 20일선 근처까지 조정 · 나눠서 매수 검토";
+  const rows: { ok: boolean; wait?: boolean; label: string; fact: string }[] = [
+    {
+      ok: c.lowHold,
+      label: "신저가 멈춤",
+      fact:
+        t.sinceLow === 0
+          ? "오늘 석 달 최저가"
+          : !c.lowHold
+            ? `${t.sinceLow}거래일 전 석 달 최저가`
+            : t.sinceLow >= 59
+              ? "석 달째 저점 안 깨짐"
+              : `저점 후 ${t.sinceLow}거래일째 지킴`,
+    },
+    { ok: c.lineOk, label: `${t.period}일선 하락 멈춤`, fact: `20일간 ${pct(t.slope)}` },
+    { ok: c.above, label: `주가가 ${t.period}일선 위`, fact: `선 ${t.dist >= 0 ? "위" : "아래"} ${pct(t.dist)}` },
+    {
+      ok: c.aligned,
+      label: "상승 추세 확인",
+      fact: c.aligned ? "선 상승 · 20일선 > 60일선" : t.slope < 1 ? `${t.period}일선이 아직 안 오름` : "20일선이 60일선 아래",
+    },
+    {
+      ok: c.dip,
+      wait: !trendOk,
+      label: "눌림목",
+      fact: !trendOk
+        ? "추세 확인 뒤에 봄"
+        : c.dip
+          ? `20일선 대비 ${pct(t.d20)} · 고점 대비 ${pct(t.pull)}`
+          : deep
+            ? "60일선 아래 · 눌림이 아니라 이탈"
+            : t.d20 > 2
+              ? `20일선보다 ${pct(t.d20)} 위 · 아직 높음`
+              : "고점 대비 조정 폭 부족",
+    },
+  ];
+  const met = rows.filter((r) => r.ok).length;
+  const stopPct = ((t.stop - t.price) / t.price) * 100;
 
   return (
     <div className={`trend ph-${t.phase}`}>
@@ -607,38 +663,58 @@ function TrendView({ t, alertOn, onBell, onChart }: { t: Trend; alertOn: boolean
           </li>
         ))}
       </ol>
-      <button className="tspark" onClick={onChart} aria-label="상세 차트 열기">
-        <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${t.period}일선 최근 1년 흐름`}>
-          <rect x={boxX} y="3" width={W - boxX - 2} height={H - 6} rx="8" fill="var(--ph)" fillOpacity="0.1" stroke="var(--ph)" strokeOpacity="0.7" strokeWidth="1.2" />
-          <text x={boxX + 7} y="16" fontSize="10" fontWeight="700" fill="var(--ph)">
-            최근 2달
-          </text>
-          <path d={dOld} fill="none" stroke="var(--muted)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-          <path d={dNew} fill="none" stroke="var(--ph)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-          <circle cx={x(n - 1)} cy={y(t.line[n - 1])} r="5" fill="var(--ph)" />
-        </svg>
-        <span>{t.period}일선 최근 1년 · 누르면 상세 차트</span>
-      </button>
       <div className="tbody">
         <div className="ttxt">
           <div className="th">
             <b>{PHASES[idx].label}</b>
-            <span>{hint}</span>
+            <span>{PHASES[idx].act}</span>
           </div>
-          <div className="num">
-            {t.daysCapped ? `${t.days}거래일 넘게 지속` : `${t.days}거래일째`}
-          </div>
-          <div className="num">
-            {t.period}일선 {dir} (20일간 {pct(t.slope)})
-          </div>
-          <div className="num">
-            현재가는 선 {t.dist >= 0 ? "위" : "아래"} <b className={tone(t.dist)}>{pct(t.dist)}</b>
-          </div>
+          <div>{why}</div>
+          <div className="num tdays">{t.daysCapped ? `${t.days}거래일 넘게 지속` : `${t.days}거래일째`}</div>
         </div>
-        <button className={`bell ${alertOn ? "on" : ""}`} onClick={onBell} aria-label="국면 전환 알림" aria-pressed={alertOn}>
+        <button className={`bell ${alertOn ? "on" : ""}`} onClick={onBell} aria-label="단계 전환 알림" aria-pressed={alertOn}>
           🔔
         </button>
       </div>
+      <button className="tspark" onClick={onChart} aria-label="상세 차트 열기">
+        <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${t.period}일선 과 주가의 최근 1년 흐름`}>
+          <rect x={boxX} y="3" width={W - boxX - 2} height={H - 6} rx="8" fill="var(--ph)" fillOpacity="0.1" stroke="var(--ph)" strokeOpacity="0.7" strokeWidth="1.2" />
+          <text x={boxX + 7} y="16" fontSize="10" fontWeight="700" fill="var(--ph)">
+            최근 2달
+          </text>
+          <path d={dPrice} fill="none" stroke="var(--ink2)" strokeOpacity="0.75" strokeWidth="1.2" strokeLinejoin="round" />
+          <path d={dOld} fill="none" stroke="var(--muted)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+          <path d={dNew} fill="none" stroke="var(--ph)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx={x(n - 1)} cy={y(t.line[t.line.length - 1])} r="5" fill="var(--ph)" />
+          <circle cx={x(n - 1)} cy={y(prices[n - 1])} r="2.5" fill="var(--ink)" />
+        </svg>
+        <span>
+          <i className="ll" /> {t.period}일선 <i className="lp" /> 주가 · 최근 1년 · 누르면 상세 차트
+        </span>
+      </button>
+      <div className="chkh">
+        매수 조건 <b className="num">{met}/5</b>
+      </div>
+      <ul className="chk">
+        {rows.map((r) => (
+          <li key={r.label} className={r.ok ? "ok" : r.wait ? "wait" : "no"}>
+            <i aria-hidden="true">{r.ok ? "✓" : r.wait ? "·" : "✕"}</i>
+            <b>{r.label}</b>
+            <span className="num">{r.fact}</span>
+          </li>
+        ))}
+      </ul>
+      {t.phase === "dip" && (
+        <div className="stopline num">
+          손절 기준 <b>{fmt(t.stop)}원</b> ({pct(stopPct)}) · 최근 20일 최저가
+          {t.volRatio !== null && (
+            <>
+              <br />
+              거래량 평소의 {t.volRatio.toFixed(1)}배 · {t.volRatio < 0.9 ? "거래량 줄며 눌림 (양호)" : t.volRatio > 1.2 ? "거래량 실린 하락 · 주의" : "평소 수준"}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -654,7 +730,7 @@ function TrendSetting({ period, onSave }: { period: number; onSave: (p: number) 
       </div>
       <div className="panel" style={{ marginTop: 0 }}>
         <p className="hint" style={{ margin: "0 0 8px" }}>
-          지금은 <b>{period}일선</b>의 기울기로 하락·횡보·상승을 판단합니다. 상세 차트에 그리는 이평선 설정과는 별개입니다.
+          지금은 <b>{period}일선</b>을 기준으로 하락·다지기·상승 추세·눌림목을 판단합니다. 상세 차트에 그리는 이평선 설정과는 별개입니다.
         </p>
         <div className="quick" style={{ marginTop: 0 }}>
           {[120, 200, 224, 240].map((p) => (

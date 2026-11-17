@@ -9,7 +9,7 @@ const won = (n: number) => Math.round(n).toLocaleString("ko-KR") + "원";
 /**
  * 켜져 있는 알림을 모두 검사하고, 조건이 맞으면 푸시를 보낸다.
  *  - price_up / price_down / stop : 한 번 울리면 꺼진다
- *  - phase  : 추세 국면(하락·하락 둔화·횡보·상승)이 바뀔 때 울린다 (계속 유지)
+ *  - phase  : 추세 국면(하락·다지기·상승 추세·눌림목)이 바뀔 때 울린다 (계속 유지)
  */
 export async function runCheck() {
   const sql = await db();
@@ -66,11 +66,20 @@ export async function runCheck() {
         // 기준선 기간이 바뀌면 비교 대상이 달라지므로 조용히 다시 시작한다
         const [pp, was] = (prev ?? "").split(":");
         next = `${period}:${t.phase}`;
-        if (Number(pp) === period && was && was !== t.phase) {
-          const icon = t.phase === "up" ? "📈" : t.phase === "flat" ? "➡️" : t.phase === "easing" ? "↘️" : "📉";
+        // 예전 방식의 국면 이름(횡보 등)이 저장돼 있으면 비교하지 않고 조용히 새로 시작한다
+        if (Number(pp) === period && PHASE_LABEL[was as Phase] && was !== t.phase) {
+          const icon = t.phase === "dip" ? "🎯" : t.phase === "up" ? "📈" : t.phase === "base" ? "➡️" : "📉";
+          const tail =
+            t.phase === "dip"
+              ? `20일선 근처까지 눌림 · 손절 기준 ${won(t.stop)}`
+              : t.phase === "up"
+                ? "추격 매수보다 눌림을 기다릴 구간"
+                : t.phase === "base"
+                  ? "아직 매수 전 · 지켜볼 구간"
+                  : "관망";
           msg = {
-            title: `${icon} ${a.name} ${PHASE_LABEL[t.phase]}`,
-            body: `${PHASE_LABEL[was as Phase] ?? was} → ${PHASE_LABEL[t.phase]} · ${period}일선 20일간 ${t.slope > 0 ? "+" : ""}${t.slope}% · 현재 ${won(price)}`,
+            title: `${icon} ${a.name} ${PHASE_LABEL[t.phase]}${t.phase === "dip" ? " · 매수 검토" : ""}`,
+            body: `${PHASE_LABEL[was as Phase]} → ${PHASE_LABEL[t.phase]} · 현재 ${won(price)} · ${tail}`,
           };
         }
       }
