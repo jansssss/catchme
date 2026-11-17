@@ -61,6 +61,10 @@ async function ensureSchema() {
     price NUMERIC,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`;
+  await sql`CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`;
 }
 
 /** 테이블이 없으면 만들고, 쿼리 함수를 돌려준다 */

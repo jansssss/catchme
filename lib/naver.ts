@@ -13,8 +13,9 @@ export type Quote = {
   changePct: number;
   open: boolean;
   tradedDate: string; // YYYYMMDD
+  volume: number; // 당일 누적 거래량 (없으면 0)
 };
-export type Bar = { date: string; close: number; high: number; low: number };
+export type Bar = { date: string; open: number; close: number; high: number; low: number; volume: number };
 
 const num = (s: unknown) => Number(String(s ?? "0").replace(/,/g, "")) || 0;
 
@@ -49,6 +50,7 @@ export async function getQuotes(codes: string[]): Promise<Record<string, Quote>>
         change: sign * Math.abs(num(d.compareToPreviousClosePrice)),
         changePct: sign * Math.abs(num(d.fluctuationsRatio)),
         open: d.marketStatus === "OPEN",
+        volume: num(d.accumulatedTradingVolume),
         tradedDate: String(d.localTradedAt ?? "").slice(0, 10).replace(/-/g, ""),
       };
     }
@@ -59,19 +61,26 @@ export async function getQuotes(codes: string[]): Promise<Record<string, Quote>>
 const ymd = (d: Date) =>
   new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul" }).format(d).replace(/-/g, "");
 
-/** 최근 약 2년치 일봉 (10분 캐시). 마지막 봉은 mergeLive 로 현재가를 반영한다 */
-export async function getDaily(code: string): Promise<Bar[]> {
+/** 최근 days 일(기본 약 2년)치 일봉 (10분 캐시). 마지막 봉은 mergeLive 로 현재가를 반영한다 */
+export async function getDaily(code: string, days = 760): Promise<Bar[]> {
   const end = new Date();
-  const start = new Date(end.getTime() - 760 * 86400000);
+  const start = new Date(end.getTime() - days * 86400000);
   const url = `https://fchart.stock.naver.com/siseJson.naver?symbol=${code}&requestType=1&startTime=${ymd(start)}&endTime=${ymd(end)}&timeframe=day`;
   const r = await fetch(url, { headers: UA, next: { revalidate: 600 } });
   if (!r.ok) throw new Error("일봉 조회 실패");
   const text = await r.text();
   const bars: Bar[] = [];
-  const re = /\["(\d{8})",\s*([\d.]+),\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)/g;
+  const re = /\["(\d{8})",\s*([\d.]+),\s*([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text))) {
-    bars.push({ date: m[1], high: Number(m[3]), low: Number(m[4]), close: Number(m[5]) });
+    bars.push({
+      date: m[1],
+      open: Number(m[2]),
+      high: Number(m[3]),
+      low: Number(m[4]),
+      close: Number(m[5]),
+      volume: Number(m[6] ?? 0),
+    });
   }
   return bars;
 }
@@ -87,9 +96,10 @@ export function mergeLive(bars: Bar[], q?: Quote): Bar[] {
       close: q.price,
       high: Math.max(last.high, q.price),
       low: Math.min(last.low, q.price),
+      volume: Math.max(last.volume, q.volume || 0),
     };
   } else if (!last || last.date < q.tradedDate) {
-    out.push({ date: q.tradedDate, close: q.price, high: q.price, low: q.price });
+    out.push({ date: q.tradedDate, open: q.price, close: q.price, high: q.price, low: q.price, volume: q.volume || 0 });
   }
   return out;
 }

@@ -613,7 +613,7 @@ function Card({ s, reload, say }: { s: Stock; reload: () => Promise<void>; say: 
       )}
       {panel === "chart" && (
         <div className="panel">
-          <Chart code={s.code} />
+          <Chart code={s.code} name={s.name} quote={s.quote} />
         </div>
       )}
     </section>

@@ -185,21 +185,63 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 }
 .quick button.sel { border-color: var(--accent); color: var(--accent); }
 
-/* 차트 */
-.chart { margin-top: 4px; position: relative; touch-action: pan-y; }
-.chart svg { display: block; width: 100%; height: auto; }
-.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--ink2); margin-bottom: 6px; }
-.legend span { display: inline-flex; align-items: center; gap: 5px; }
-.legend i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
-.tip {
-  position: absolute; top: 22px; pointer-events: none; background: #05070b; border: 1px solid var(--line);
-  border-radius: 10px; padding: 8px 10px; font-size: 12px; min-width: 132px; z-index: 5;
+/* 차트 — 간단(라인) */
+.mini-top { display: flex; align-items: baseline; justify-content: space-between; font-size: 13px; }
+.mini-top span { font-size: 11px; color: var(--muted); }
+.mini { display: block; width: 100%; margin-top: 4px; border-radius: 10px; }
+.mini:active { background: var(--bg); }
+.mini svg { display: block; width: 100%; height: auto; }
+.ranges { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin-top: 6px; }
+.ranges button { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 7px 0; border-radius: 10px; min-height: 44px; }
+.ranges button span { font-size: 13px; color: var(--muted); font-weight: 600; }
+.ranges button b { font-size: 11px; }
+.ranges button.sel { background: var(--bg); }
+.ranges button.sel span { color: var(--ink); font-weight: 800; }
+
+/* 차트 — 상세(전체 화면) */
+.detail {
+  position: fixed; inset: 0; z-index: 40; background: var(--bg); display: flex; flex-direction: column;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
-.tip .d { color: var(--muted); margin-bottom: 4px; }
-.tip div.r { display: flex; justify-content: space-between; gap: 12px; }
-.tip .r span { display: inline-flex; align-items: center; gap: 5px; color: var(--ink2); }
-.tip .r i { width: 8px; height: 3px; border-radius: 2px; display: inline-block; }
-.tip .r b { font-variant-numeric: tabular-nums; }
+.dhead { display: flex; align-items: center; padding: 8px 8px 4px; }
+.dback { width: 44px; height: 44px; font-size: 22px; flex: none; }
+.dtitle { flex: 1; text-align: center; min-width: 0; }
+.dtitle .nm { font-size: 13px; font-weight: 700; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dtitle .num { font-size: 16px; }
+.dbar { display: flex; align-items: center; gap: 4px; padding: 4px 12px 8px; border-bottom: 1px solid var(--line); }
+.dbar .sp { flex: 1; }
+.dbar button { min-width: 44px; height: 38px; padding: 0 12px; border-radius: 10px; font-size: 15px; font-weight: 700; color: var(--muted); }
+.dbar button.sel { background: var(--card2); color: var(--ink); }
+.dbar .gear { font-size: 13px; color: var(--ink2); border: 1px solid var(--line); background: var(--card); }
+.dchart { position: relative; flex: 1; min-height: 0; }
+.dcanvas { position: absolute; inset: 0; }
+.dlegend { position: absolute; left: 8px; top: 6px; right: 70px; z-index: 3; pointer-events: none; font-size: 12px; }
+.dlegend > div { display: flex; flex-wrap: wrap; gap: 2px 7px; align-items: center; }
+.dlegend .k { color: var(--muted); font-weight: 600; }
+.dlegend .ohlc { margin-top: 3px; font-size: 11px; color: var(--ink2); background: rgba(11, 14, 20, 0.8); border-radius: 6px; width: fit-content; padding: 2px 4px; }
+.dlegend .ohlc i { font-style: normal; }
+.dmark { position: absolute; z-index: 3; pointer-events: none; transform: translateX(-50%); font-size: 12px; line-height: 16px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dmark.up { color: var(--up); }
+.dmark.down { color: var(--down); }
+
+/* 이동평균선 설정 시트 */
+.sheetwrap { position: absolute; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.55); display: flex; align-items: flex-end; justify-content: center; }
+.sheet {
+  width: 100%; max-width: 560px; max-height: 90%; overflow-y: auto; background: var(--card); border: 1px solid var(--line);
+  border-radius: 20px 20px 0 0; padding: 18px 16px calc(env(safe-area-inset-bottom) + 16px);
+}
+.sheet h4 { margin: 0; font-size: 17px; }
+.sheet .hint { font-size: 12px; color: var(--muted); margin: 4px 0 12px; }
+.marow { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.marow .field { flex: 1; min-width: 0; height: 46px; font-size: 18px; }
+.marow .unit { color: var(--muted); font-size: 13px; }
+.marow input[type="color"] { width: 46px; height: 46px; padding: 3px; border-radius: 12px; border: 2px solid var(--line); background: var(--bg); flex: none; }
+.marow .del { width: 40px; height: 46px; color: var(--muted); font-size: 16px; flex: none; }
+.sw { width: 46px; height: 28px; border-radius: 999px; background: var(--line); position: relative; flex: none; }
+.sw i { position: absolute; left: 3px; top: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--ink2); transition: transform 0.15s; }
+.sw.on { background: var(--accent); }
+.sw.on i { transform: translateX(18px); background: #fff; }
+.sheet .row { margin-top: 12px; }
 
 /* 기록 */
 .sect { margin: 26px 0 10px; display: flex; align-items: center; }
