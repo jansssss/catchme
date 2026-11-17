@@ -3,17 +3,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Chart from "./Chart";
 
 type Alert = { id: number; kind: string; value: number; active: boolean; firedAt: string | null };
-type Metrics = {
+type Phase = "down" | "easing" | "flat" | "up";
+type Trend = {
   price: number;
-  ma: Record<string, number | null>;
-  dist: Record<string, number | null>;
-  gap: number | null;
-  gapTrend: "widening" | "narrowing" | "flat" | null;
-  range20: number | null;
-  drift20: number | null;
-  reversed: boolean;
-  sideways: boolean;
-  bottom: boolean;
+  period: number;
+  ma: number;
+  dist: number;
+  slope: number;
+  slopePrev: number | null;
+  phase: Phase;
+  days: number;
+  daysCapped: boolean;
+  line: number[];
 };
 type Stock = {
   code: string;
@@ -21,7 +22,8 @@ type Stock = {
   market: string;
   buyPrice: number | null;
   quote: { price: number; change: number; changePct: number; open: boolean } | null;
-  metrics: Metrics | null;
+  trend: Trend | null;
+  trendShort: boolean;
   alerts: Alert[];
 };
 type Found = { code: string; name: string; market: string };
@@ -30,8 +32,12 @@ type Log = { id: number; title: string; body: string; created_at: string };
 const fmt = (n: number) => Math.round(n).toLocaleString("ko-KR");
 const pct = (n: number) => `${n > 0 ? "+" : ""}${n.toFixed(2)}%`;
 const tone = (n: number) => (n > 0 ? "up" : n < 0 ? "down" : "flat");
-const PERIODS = [160, 200, 224];
-const DEFAULT_GAP = 5;
+const PHASES: { key: Phase; label: string; hint: string }[] = [
+  { key: "down", label: "하락", hint: "관망" },
+  { key: "easing", label: "하락 둔화", hint: "지켜보기" },
+  { key: "flat", label: "횡보", hint: "바닥 다지기 · 주목" },
+  { key: "up", label: "상승 전환", hint: "매수 검토" },
+];
 
 /** 호가 단위에 맞춰 내림 */
 function tick(p: number) {
@@ -62,6 +68,7 @@ export default function Page() {
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [pushReady, setPushReady] = useState(true);
+  const [trendPeriod, setTrendPeriod] = useState(224);
   const [push, setPush] = useState<"unknown" | "on" | "off" | "denied" | "unsupported" | "ios-install">("unknown");
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -81,6 +88,7 @@ export default function Page() {
       setError("");
       setStocks(w.stocks);
       setPushReady(w.pushReady);
+      if (w.trendPeriod) setTrendPeriod(w.trendPeriod);
       setLogs(l.logs ?? []);
       setLocked(false);
     } catch (e: any) {
@@ -260,9 +268,22 @@ export default function Page() {
         </>
       )}
 
+      {stocks && stocks.length > 0 && (
+        <TrendSetting
+          period={trendPeriod}
+          onSave={async (p) => {
+            const r = await api("/api/settings", "PUT", { trendPeriod: p });
+            if (r.error) return say(r.error);
+            say(`추세 기준선을 ${p}일선으로 변경`);
+            load();
+          }}
+        />
+      )}
+
       <p className="foot">
-        이평선 도달 = 현재가가 해당 이평선 ±1% 이내 · 바닥 신호 = 현재가 &lt; 160일선 &lt; 224일선(역배열)이고 두 선의 공백이 기준
-        이상이며 최근 20일 종가 변동폭 10% 이내(횡보)
+        추세 국면은 {trendPeriod}일선의 기울기(최근 20거래일 변화율)로 판단합니다 · 하락 = -1% 이하, 또는 오르던 선이 눕거나 현재가가 선보다
+        3% 넘게 아래로 이탈 · 하락 둔화 = 내려가지만 한 달 전보다 완만 · 횡보 = ±1% 이내에서 안정 · 상승 전환 = +1% 이상이고
+        현재가가 선 근처 이상 · 새 국면이 3거래일 이어지면 전환으로 봅니다
         <br />
         시세는 네이버 금융 기준이며 장중 약 5분 간격으로 확인합니다. 투자 판단과 책임은 본인에게 있습니다.
       </p>
@@ -380,41 +401,23 @@ function Search({ have, onAdd }: { have: string[]; onAdd: (f: Found) => Promise<
 
 function Card({ s, reload, say }: { s: Stock; reload: () => Promise<void>; say: (m: string) => void }) {
   const [panel, setPanel] = useState<null | "price" | "stop" | "chart">(null);
-  const m = s.metrics;
-  const price = s.quote?.price ?? m?.price ?? 0;
-  const maAlert = (p: number) => s.alerts.find((a) => a.kind === "ma" && a.value === p);
-  const bottomAlert = s.alerts.find((a) => a.kind === "bottom");
+  const t = s.trend;
+  const price = s.quote?.price ?? t?.price ?? 0;
+  const phaseAlert = s.alerts.find((a) => a.kind === "phase");
   const chips = s.alerts.filter((a) => ["price_up", "price_down", "stop"].includes(a.kind));
   const toggle = (k: typeof panel) => setPanel(panel === k ? null : k);
 
-  const toggleMa = async (p: number) => {
-    const a = maAlert(p);
-    if (a) await api(`/api/alerts?id=${a.id}`, "DELETE");
-    else await api("/api/alerts", "POST", { code: s.code, kind: "ma", value: p });
-    say(a ? `${p}일선 알림 끔` : `${p}일선 도달 시 알림`);
+  const togglePhase = async () => {
+    if (phaseAlert) await api(`/api/alerts?id=${phaseAlert.id}`, "DELETE");
+    else await api("/api/alerts", "POST", { code: s.code, kind: "phase" });
+    say(phaseAlert ? "국면 전환 알림 끔" : "국면이 바뀌면 알림");
     reload();
   };
-  const toggleBottom = async () => {
-    if (bottomAlert) await api(`/api/alerts?id=${bottomAlert.id}`, "DELETE");
-    else await api("/api/alerts", "POST", { code: s.code, kind: "bottom", value: DEFAULT_GAP });
-    say(bottomAlert ? "바닥 신호 알림 끔" : "바닥 신호 발생 시 알림");
-    reload();
-  };
-  const setGap = async (g: number) => {
-    await api("/api/alerts", "POST", { code: s.code, kind: "bottom", value: g });
-    reload();
-  };
-
-  const rungs: { key: string; label: string; value: number; period?: number }[] = [];
-  if (m) for (const p of PERIODS) if (m.ma[p] != null) rungs.push({ key: `m${p}`, label: `${p}일`, value: m.ma[p]!, period: p });
-  if (price) rungs.push({ key: "now", label: "현재가", value: price });
-  rungs.sort((a, b) => b.value - a.value);
 
   const pl = s.buyPrice && price ? ((price - s.buyPrice) / s.buyPrice) * 100 : null;
-  const gapOn = bottomAlert ? bottomAlert.value : DEFAULT_GAP;
 
   return (
-    <section className={`card ${m?.bottom ? "bottom" : ""}`}>
+    <section className={`card ${t ? `ph-${t.phase}` : ""}`}>
       <div className="head">
         <div>
           <div className="nm">{s.name}</div>
@@ -439,90 +442,10 @@ function Card({ s, reload, say }: { s: Stock; reload: () => Promise<void>; say: 
         </div>
       </div>
 
-      {m && m.gap !== null ? (
-        <div className="signal">
-          <div className="sigtxt">
-          {m.bottom ? (
-            <span className="pill go">🟢 바닥 후보</span>
-          ) : m.reversed ? (
-            <span className="pill rev">역배열</span>
-          ) : (
-            <span className="pill">{m.gap > 0 ? "160 < 224" : "정배열"}</span>
-          )}
-          {m.gap > 0 ? (
-            <span>
-              공백 <b className="num">{m.gap.toFixed(1)}%</b>{" "}
-              {m.gapTrend === "widening" ? "↗ 확대" : m.gapTrend === "narrowing" ? "↘ 축소" : "→ 유지"}
-            </span>
-          ) : (
-            <span>160일선이 224일선 위</span>
-          )}
-          {m.range20 !== null && (
-            <span>
-              20일 변동폭 <b className="num">{m.range20.toFixed(1)}%</b> {m.sideways ? "횡보" : "변동 중"}
-            </span>
-          )}
-          </div>
-          <button
-            className={`bell ${bottomAlert ? "on" : ""}`}
-            onClick={toggleBottom}
-            aria-label="바닥 신호 알림"
-            aria-pressed={!!bottomAlert}
-          >
-            🔔
-          </button>
-          {bottomAlert && (
-            <div className="quick sigq">
-              {[3, 5, 7, 10].map((g) => (
-                <button key={g} className={gapOn === g ? "sel" : ""} onClick={() => setGap(g)}>
-                  공백 {g}%↑
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+      {t ? (
+        <TrendView t={t} alertOn={!!phaseAlert} onBell={togglePhase} />
       ) : (
-        m && <div className="signal">상장 기간이 짧아 224일선을 계산할 수 없습니다</div>
-      )}
-
-      {rungs.length > 1 && (
-        <div className="ladder">
-          {rungs.map((r) => {
-            if (!r.period) {
-              return (
-                <div className="rung now" key={r.key}>
-                  <span className="lb">현재가</span>
-                  <span className="val num">{fmt(r.value)}</span>
-                  <span />
-                  <span />
-                </div>
-              );
-            }
-            const need = ((r.value - price) / price) * 100; // 이평선까지 남은 거리
-            const near = Math.abs(m!.dist[r.period] ?? 99) <= 1;
-            const on = !!maAlert(r.period);
-            return (
-              <div className={`rung ${near ? "near" : ""}`} key={r.key}>
-                <span className="lb">
-                  <i style={{ background: `var(--ma${r.period})` }} />
-                  {r.label}
-                </span>
-                <span className="val num">{fmt(r.value)}</span>
-                <span className={`pct num ${near ? "" : tone(need)}`} style={near ? { color: "var(--warn)" } : undefined}>
-                  {near ? "도달" : pct(need)}
-                </span>
-                <button
-                  className={`bell ${on ? "on" : ""}`}
-                  onClick={() => toggleMa(r.period!)}
-                  aria-label={`${r.period}일선 도달 알림`}
-                  aria-pressed={on}
-                >
-                  🔔
-                </button>
-              </div>
-            );
-          })}
-        </div>
+        s.trendShort && <div className="trend none">상장 기간이 짧아 추세를 계산할 수 없습니다</div>
       )}
 
       {chips.length > 0 && (
@@ -617,6 +540,112 @@ function Card({ s, reload, say }: { s: Stock; reload: () => Promise<void>; say: 
         </div>
       )}
     </section>
+  );
+}
+
+function TrendView({ t, alertOn, onBell }: { t: Trend; alertOn: boolean; onBell: () => void }) {
+  const idx = PHASES.findIndex((p) => p.key === t.phase);
+  const W = 150, H = 60, P = 6;
+  const n = t.line.length;
+  let lo = Math.min(...t.line), hi = Math.max(...t.line);
+  // 거의 수평인 선이 과장되어 보이지 않도록 세로 범위를 최소 8%로 잡는다
+  const mid = (lo + hi) / 2;
+  const half = Math.max((hi - lo) / 2, mid * 0.04);
+  lo = mid - half;
+  hi = mid + half;
+  const x = (i: number) => P + (i / Math.max(1, n - 1)) * (W - 2 * P);
+  const y = (v: number) => P + (1 - (v - lo) / (hi - lo)) * (H - 2 * P);
+  const d = t.line.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  // 하락으로 분류됐지만 선이 아직 내려가지 않는 경우: 고점에서 꺾이는 중
+  const hint =
+    t.phase === "down" && t.slope > -1
+      ? t.slope >= 1
+        ? "선 아래로 이탈 · 관망"
+        : "꺾이는 중 · 관망"
+      : PHASES[idx].hint;
+  const dir = t.slope >= 1 ? "오르는 중" : t.slope <= -1 ? "내려가는 중" : "거의 수평";
+
+  return (
+    <div className={`trend ph-${t.phase}`}>
+      <ol className="steps" aria-label={`추세 국면: ${PHASES[idx].label}`}>
+        {PHASES.map((p, i) => (
+          <li key={p.key} className={i === idx ? "on" : i < idx ? "past" : ""} aria-current={i === idx ? "step" : undefined}>
+            <i />
+            <span>{p.label}</span>
+          </li>
+        ))}
+      </ol>
+      <div className="tbody">
+        <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${t.period}일선 최근 흐름`}>
+          <path d={d} fill="none" stroke="var(--ph)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx={x(n - 1)} cy={y(t.line[n - 1])} r="4" fill="var(--ph)" />
+        </svg>
+        <div className="ttxt">
+          <div className="th">
+            <b>{PHASES[idx].label}</b>
+            <span>{hint}</span>
+          </div>
+          <div className="num">
+            {t.daysCapped ? `${t.days}거래일 넘게 지속` : `${t.days}거래일째`}
+          </div>
+          <div className="num">
+            {t.period}일선 {dir} (20일간 {pct(t.slope)})
+          </div>
+          <div className="num">
+            현재가는 선 {t.dist >= 0 ? "위" : "아래"} <b className={tone(t.dist)}>{pct(t.dist)}</b>
+          </div>
+        </div>
+        <button className={`bell ${alertOn ? "on" : ""}`} onClick={onBell} aria-label="국면 전환 알림" aria-pressed={alertOn}>
+          🔔
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TrendSetting({ period, onSave }: { period: number; onSave: (p: number) => Promise<void> }) {
+  const [v, setV] = useState("");
+  const n = Number(v);
+  const ok = Number.isInteger(n) && n >= 20 && n <= 400 && n !== period;
+  return (
+    <>
+      <div className="sect">
+        <h3>추세 기준선</h3>
+      </div>
+      <div className="panel" style={{ marginTop: 0 }}>
+        <p className="hint" style={{ margin: "0 0 8px" }}>
+          지금은 <b>{period}일선</b>의 기울기로 하락·횡보·상승을 판단합니다. 상세 차트에 그리는 이평선 설정과는 별개입니다.
+        </p>
+        <div className="quick" style={{ marginTop: 0 }}>
+          {[120, 200, 224, 240].map((p) => (
+            <button key={p} className={period === p ? "sel" : ""} onClick={() => p !== period && onSave(p)}>
+              {p}일
+            </button>
+          ))}
+        </div>
+        <div className="row">
+          <input
+            className="field num"
+            inputMode="numeric"
+            placeholder="직접 입력 (20~400)"
+            aria-label="추세 기준선 기간"
+            value={v}
+            onChange={(e) => setV(e.target.value.replace(/[^\d]/g, "").slice(0, 3))}
+          />
+          <button
+            className="btn"
+            style={{ flex: "none" }}
+            disabled={!ok}
+            onClick={async () => {
+              await onSave(n);
+              setV("");
+            }}
+          >
+            적용
+          </button>
+        </div>
+      </div>
+    </>
   );
 }
 

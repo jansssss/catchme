@@ -1,6 +1,7 @@
 import { db } from "./db";
 import { getDaily, getQuotes, mergeLive, type Bar } from "./naver";
-import { computeMetrics, NEAR_PCT } from "./indicators";
+import { computeTrend, daysFor, PHASE_LABEL, type Phase } from "./indicators";
+import { getTrendPeriod } from "./settings";
 import { sendPush } from "./push";
 
 const won = (n: number) => Math.round(n).toLocaleString("ko-KR") + "원";
@@ -8,8 +9,7 @@ const won = (n: number) => Math.round(n).toLocaleString("ko-KR") + "원";
 /**
  * 켜져 있는 알림을 모두 검사하고, 조건이 맞으면 푸시를 보낸다.
  *  - price_up / price_down / stop : 한 번 울리면 꺼진다
- *  - ma     : 이평선 ±1% 안으로 들어오거나 돌파/이탈할 때 울린다 (계속 유지)
- *  - bottom : 역배열 공백 + 횡보 조건이 새로 충족될 때 울린다 (계속 유지)
+ *  - phase  : 추세 국면(하락·하락 둔화·횡보·상승 전환)이 바뀔 때 울린다 (계속 유지)
  */
 export async function runCheck() {
   const sql = await db();
@@ -22,13 +22,14 @@ export async function runCheck() {
   const codes = [...new Set(alerts.map((a) => a.code as string))];
   const quotes = await getQuotes(codes);
   const needBars = new Set<string>(
-    alerts.filter((a) => a.kind === "ma" || a.kind === "bottom").map((a) => a.code)
+    alerts.filter((a) => a.kind === "phase").map((a) => a.code)
   );
+  const period = needBars.size ? await getTrendPeriod() : 0;
   const bars: Record<string, Bar[]> = {};
   await Promise.all(
     [...needBars].map(async (c) => {
       try {
-        bars[c] = mergeLive(await getDaily(c), quotes[c]);
+        bars[c] = mergeLive(await getDaily(c, daysFor(period)), quotes[c]);
       } catch {
         /* 다음 주기에 다시 시도 */
       }
@@ -59,36 +60,17 @@ export async function runCheck() {
         urgent: true,
       };
       deactivate = true;
-    } else if (a.kind === "ma" && bars[a.code]) {
-      const m = computeMetrics(bars[a.code]);
-      const ma = m?.ma[v];
-      const d = m?.dist[v];
-      if (ma != null && d != null) {
-        // 근접 구간을 벗어나려면 1.5% 이상 떨어져야 한다 (같은 알림 반복 방지)
-        const near =
-          Math.abs(d) <= NEAR_PCT || (prev === "near" && Math.abs(d) <= NEAR_PCT * 1.5);
-        next = near ? "near" : d > 0 ? "above" : "below";
-        if (next !== prev) {
-          if (next === "near") {
-            msg = {
-              title: `📍 ${a.name} ${v}일선 도달`,
-              body: `현재 ${won(price)} · ${v}일선 ${won(ma)} (${d > 0 ? "+" : ""}${d}%)`,
-            };
-          } else if (prev === "below" && next === "above") {
-            msg = { title: `📈 ${a.name} ${v}일선 돌파`, body: `현재 ${won(price)} · ${v}일선 ${won(ma)}` };
-          } else if (prev === "above" && next === "below") {
-            msg = { title: `📉 ${a.name} ${v}일선 이탈`, body: `현재 ${won(price)} · ${v}일선 ${won(ma)}` };
-          }
-        }
-      }
-    } else if (a.kind === "bottom" && bars[a.code]) {
-      const m = computeMetrics(bars[a.code], v);
-      if (m) {
-        next = m.bottom ? "on" : "off";
-        if (m.bottom && prev !== "on") {
+    } else if (a.kind === "phase" && bars[a.code]) {
+      const t = computeTrend(bars[a.code], period);
+      if (t) {
+        // 기준선 기간이 바뀌면 비교 대상이 달라지므로 조용히 다시 시작한다
+        const [pp, was] = (prev ?? "").split(":");
+        next = `${period}:${t.phase}`;
+        if (Number(pp) === period && was && was !== t.phase) {
+          const icon = t.phase === "up" ? "📈" : t.phase === "flat" ? "➡️" : t.phase === "easing" ? "↘️" : "📉";
           msg = {
-            title: `🟢 ${a.name} 바닥 신호`,
-            body: `역배열 공백 ${m.gap}% · 20일 변동폭 ${m.range20}% (횡보) · 현재 ${won(price)}`,
+            title: `${icon} ${a.name} ${PHASE_LABEL[t.phase]}`,
+            body: `${PHASE_LABEL[was as Phase] ?? was} → ${PHASE_LABEL[t.phase]} · ${period}일선 20일간 ${t.slope > 0 ? "+" : ""}${t.slope}% · 현재 ${won(price)}`,
           };
         }
       }

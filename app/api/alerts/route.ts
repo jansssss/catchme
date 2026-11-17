@@ -3,25 +3,18 @@ import { db } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
-const KINDS = ["price_up", "price_down", "stop", "ma", "bottom"];
+const KINDS = ["price_up", "price_down", "stop", "phase"];
 
 export async function POST(req: Request) {
   if (!(await authed())) return unauthorized();
   const { code, kind, value } = await req.json();
-  const v = Number(value);
+  const v = kind === "phase" ? 1 : Number(value); // 국면 알림은 값이 없다
   if (!KINDS.includes(kind) || !(v > 0)) {
     return Response.json({ error: "잘못된 알림" }, { status: 400 });
   }
-  if (kind === "ma" && ![160, 200, 224].includes(v)) {
-    return Response.json({ error: "지원하지 않는 이평선" }, { status: 400 });
-  }
   const sql = await db();
-  // 이평선·바닥 알림은 종목당 하나씩만 둔다
-  if (kind === "ma") {
-    await sql`DELETE FROM alerts WHERE code = ${code} AND kind = 'ma' AND value = ${v}`;
-  } else if (kind === "bottom") {
-    await sql`DELETE FROM alerts WHERE code = ${code} AND kind = 'bottom'`;
-  }
+  // 국면 알림은 종목당 하나만 둔다
+  if (kind === "phase") await sql`DELETE FROM alerts WHERE code = ${code} AND kind = 'phase'`;
   await sql`INSERT INTO alerts (code, kind, value) VALUES (${code}, ${kind}, ${v})`;
   return Response.json({ ok: true });
 }

@@ -12,9 +12,6 @@
   --accent-ink: #04140b;
   --warn: #ffb020;
   --danger: #ff5c61;
-  --ma160: #c98500;
-  --ma200: #199e70;
-  --ma224: #9085e9;
   color-scheme: dark;
 }
 
@@ -111,7 +108,8 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
   background: var(--card); border: 1px solid var(--line); border-radius: 20px;
   padding: 16px; margin-bottom: 14px;
 }
-.card.bottom { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 28px rgba(34, 211, 128, 0.16); }
+.card.ph-flat { border-color: rgba(255, 176, 32, 0.55); }
+.card.ph-up { border-color: var(--up); box-shadow: 0 0 0 1px var(--up), 0 0 28px rgba(255, 92, 97, 0.16); }
 .head { display: flex; align-items: flex-start; gap: 10px; }
 .head .nm { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; }
 .head .sub { font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: center; margin-top: 2px; }
@@ -122,31 +120,25 @@ button { cursor: pointer; border: 0; background: none; padding: 0; }
 .down { color: var(--down); }
 .flat { color: var(--ink2); }
 
-.signal {
-  margin-top: 12px; padding: 10px 8px 10px 12px; border-radius: 12px; background: var(--card2);
-  font-size: 13px; color: var(--ink2); display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center;
-}
-.sigtxt { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
-.sigq { grid-column: 1 / -1; margin-top: 0; }
-.signal b { color: var(--ink); }
-.pill { font-size: 12px; font-weight: 800; padding: 3px 9px; border-radius: 999px; background: var(--line); color: var(--ink2); }
-.pill.go { background: var(--accent); color: var(--accent-ink); }
-.pill.rev { background: rgba(91, 155, 255, 0.18); color: #9cc2ff; }
-
-/* 이평선 사다리 */
-.ladder { margin-top: 12px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
-.rung {
-  display: grid; grid-template-columns: 62px 1fr auto 52px; align-items: center; gap: 8px;
-  min-height: 48px; padding: 0 6px 0 12px; border-bottom: 1px solid var(--line); font-size: 15px;
-}
-.rung:last-child { border-bottom: 0; }
-.rung .lb { font-weight: 700; display: flex; align-items: center; gap: 6px; }
-.rung .lb i { width: 10px; height: 3px; border-radius: 2px; display: inline-block; }
-.rung .val { font-weight: 700; text-align: right; }
-.rung .pct { font-size: 13px; font-weight: 700; min-width: 58px; text-align: right; }
-.rung.now { background: var(--ink); color: var(--bg); min-height: 38px; }
-.rung.now .lb, .rung.now .val { font-weight: 800; }
-.rung.near { background: rgba(255, 176, 32, 0.12); }
+/* 추세 국면 */
+.ph-down { --ph: var(--down); }
+.ph-easing { --ph: #9aa6c4; }
+.ph-flat { --ph: var(--warn); }
+.ph-up { --ph: var(--up); }
+.trend { margin-top: 12px; padding: 12px; border-radius: 14px; background: var(--card2); }
+.trend.none { font-size: 13px; color: var(--ink2); }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.steps li { display: flex; flex-direction: column; gap: 5px; font-size: 11px; font-weight: 700; color: var(--muted); text-align: center; }
+.steps li i { height: 6px; border-radius: 3px; background: var(--line); }
+.steps li.past i { background: #3a4257; }
+.steps li.on { color: var(--ph); font-weight: 800; }
+.steps li.on i { background: var(--ph); box-shadow: 0 0 10px var(--ph); }
+.tbody { display: grid; grid-template-columns: 38% 1fr auto; gap: 10px; align-items: center; margin-top: 10px; }
+.tbody svg { display: block; width: 100%; height: auto; background: var(--bg); border-radius: 10px; }
+.ttxt { font-size: 12px; color: var(--ink2); line-height: 1.5; min-width: 0; }
+.ttxt .th { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; }
+.ttxt .th b { font-size: 18px; font-weight: 800; color: var(--ph); letter-spacing: -0.02em; }
+.ttxt .th span { font-size: 12px; font-weight: 700; color: var(--ink); }
 .bell {
   width: 44px; height: 38px; border-radius: 10px; font-size: 17px; justify-self: end;
   background: var(--card2); border: 1px solid var(--line); opacity: 0.55; filter: grayscale(1);

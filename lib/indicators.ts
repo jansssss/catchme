@@ -1,33 +1,38 @@
 import type { Bar } from "./naver";
 
-export const PERIODS = [160, 200, 224] as const;
-export const NEAR_PCT = 1; // 이평선 ±1% 안이면 "도달"
-export const SIDEWAYS_RANGE = 10; // 최근 20일 종가 변동폭 10% 이내
-export const SIDEWAYS_DRIFT = 5; // 20일 전 대비 등락 5% 이내
-export const DEFAULT_GAP = 5; // 바닥 신호 기본 공백 기준(%)
+export const DEFAULT_TREND_PERIOD = 224; // 추세를 판단하는 기준 이평선
+export const SLOPE_WIN = 20; // 기울기 = 기준선이 최근 20거래일 동안 움직인 비율(%)
+export const FLAT_PCT = 1; // 기울기가 ±1% 안이면 수평(횡보)
+export const EASE_MIN = 0.5; // 한 달 전보다 이만큼(%p) 이상 완만해져야 "하락 둔화"
+export const BREAK_PCT = 3; // 선이 올라도 현재가가 선보다 이만큼(%) 넘게 아래면 꺾인 것으로 본다
+export const CONFIRM_BARS = 3; // 새 국면이 3거래일 이어져야 바뀐 것으로 본다
+const LOOKBACK = 250; // 국면이 며칠째인지 거슬러 볼 최대 거래일
+const LINE_POINTS = 120; // 미리보기로 그릴 기준선 길이(약 6개월)
 
-export type Metrics = {
-  price: number;
-  ma: Record<number, number | null>;
-  /** 현재가가 이평선 대비 몇 % 위(+) / 아래(-) 인지 */
-  dist: Record<number, number | null>;
-  /** (224선-160선)/224선 %. 양수면 역배열 공백 */
-  gap: number | null;
-  gapPrev: number | null; // 20거래일 전 공백
-  gapTrend: "widening" | "narrowing" | "flat" | null;
-  range20: number | null;
-  drift20: number | null;
-  reversed: boolean; // 현재가 < 160선 < 224선
-  sideways: boolean;
-  bottom: boolean; // 역배열 + 공백 기준 이상 + 횡보
+/** 하락 → 하락 둔화 → 횡보 → 상승 전환 */
+export type Phase = "down" | "easing" | "flat" | "up";
+export const PHASE_LABEL: Record<Phase, string> = {
+  down: "하락",
+  easing: "하락 둔화",
+  flat: "횡보",
+  up: "상승 전환",
 };
 
-function smaAt(closes: number[], n: number, endIdx: number): number | null {
-  if (endIdx + 1 < n) return null;
-  let s = 0;
-  for (let i = endIdx - n + 1; i <= endIdx; i++) s += closes[i];
-  return s / n;
-}
+export type Trend = {
+  price: number;
+  period: number;
+  ma: number; // 기준선 현재 값
+  dist: number; // 현재가가 기준선 대비 몇 % 위(+) / 아래(-)
+  slope: number; // 기준선의 최근 20거래일 변화율 %
+  slopePrev: number | null; // 20거래일 전의 기울기
+  phase: Phase;
+  days: number; // 현재 국면이 이어진 거래일 수
+  daysCapped: boolean; // 조회 구간 내내 같은 국면 (실제로는 더 오래됨)
+  line: number[]; // 기준선 최근 값들 (미리보기용)
+};
+
+/** 추세 계산에 필요한 일봉을 받기 위한 조회 일수 */
+export const daysFor = (period: number) => Math.max(760, Math.ceil((period + 300) * 1.5));
 
 export function smaSeries(closes: number[], n: number): (number | null)[] {
   const out: (number | null)[] = new Array(closes.length).fill(null);
@@ -42,59 +47,78 @@ export function smaSeries(closes: number[], n: number): (number | null)[] {
 
 const r2 = (x: number) => Math.round(x * 100) / 100;
 
-export function computeMetrics(bars: Bar[], minGap = DEFAULT_GAP): Metrics | null {
-  if (!bars.length) return null;
+/** 기준 이평선의 기울기로 추세 국면을 판단한다. 상장 기간이 짧으면 null */
+export function computeTrend(bars: Bar[], period = DEFAULT_TREND_PERIOD): Trend | null {
   const closes = bars.map((b) => b.close);
   const last = closes.length - 1;
-  const price = closes[last];
-  const ma: Record<number, number | null> = {};
-  const dist: Record<number, number | null> = {};
-  for (const p of PERIODS) {
-    const v = smaAt(closes, p, last);
-    ma[p] = v === null ? null : Math.round(v);
-    dist[p] = v === null ? null : r2(((price - v) / v) * 100);
-  }
-  const gapAt = (idx: number) => {
-    const a = smaAt(closes, 160, idx);
-    const b = smaAt(closes, 224, idx);
-    return a === null || b === null ? null : ((b - a) / b) * 100;
-  };
-  const g = gapAt(last);
-  const gp = last >= 20 ? gapAt(last - 20) : null;
-  let gapTrend: Metrics["gapTrend"] = null;
-  if (g !== null && gp !== null) {
-    gapTrend = g - gp > 0.3 ? "widening" : g - gp < -0.3 ? "narrowing" : "flat";
-  }
+  const first = period - 1 + SLOPE_WIN; // 기울기를 구할 수 있는 첫 봉
+  if (last < first) return null;
+  const ma = smaSeries(closes, period);
 
-  let range20: number | null = null;
-  let drift20: number | null = null;
-  if (closes.length >= 21) {
-    const w = closes.slice(-20);
-    const hi = Math.max(...w);
-    const lo = Math.min(...w);
-    range20 = r2(((hi - lo) / lo) * 100);
-    const base = closes[last - 20];
-    drift20 = r2(((price - base) / base) * 100);
+  const slopeAt = (i: number): number | null => {
+    const a = ma[i];
+    const b = i - SLOPE_WIN >= 0 ? ma[i - SLOPE_WIN] : null;
+    return a == null || b == null ? null : ((a - b) / b) * 100;
+  };
+  const rawAt = (i: number): Phase | null => {
+    const s = slopeAt(i);
+    if (s === null) return null;
+    const p = slopeAt(i - SLOPE_WIN);
+    if (s >= FLAT_PCT) {
+      // 선은 아직 오르지만 가격이 선 아래로 크게 내려왔으면 고점에서 꺾인 것 → 하락으로 본다
+      return ((closes[i] - ma[i]!) / ma[i]!) * 100 >= -BREAK_PCT ? "up" : "down";
+    }
+    if (s > -FLAT_PCT) {
+      // 수평이라도 오르던 선이 눕는 중(기울기가 줄어드는 중)이면 바닥이 아니라 꺾이는 것
+      return p !== null && s - p <= -EASE_MIN ? "down" : "flat";
+    }
+    return p !== null && s - p >= EASE_MIN && s >= p * 0.6 ? "easing" : "down";
+  };
+
+  // 하루 이틀 튀는 것으로 국면이 바뀌지 않도록, 며칠 이어져야 전환으로 인정한다
+  const start = Math.max(first, last - LOOKBACK);
+  let phase: Phase | null = null;
+  let since = start;
+  let cand: Phase | null = null;
+  let run = 0;
+  for (let i = start; i <= last; i++) {
+    const r = rawAt(i);
+    if (r === null) continue;
+    if (phase === null) {
+      phase = r;
+      since = i;
+    } else if (r === phase) {
+      cand = null;
+      run = 0;
+    } else {
+      if (r === cand) run++;
+      else {
+        cand = r;
+        run = 1;
+      }
+      if (run >= CONFIRM_BARS) {
+        phase = r;
+        since = i - run + 1;
+        cand = null;
+        run = 0;
+      }
+    }
   }
-  const sideways =
-    range20 !== null &&
-    drift20 !== null &&
-    range20 <= SIDEWAYS_RANGE &&
-    Math.abs(drift20) <= SIDEWAYS_DRIFT;
-  const reversed =
-    ma[160] !== null && ma[224] !== null && price < ma[160]! && ma[160]! < ma[224]!;
-  const bottom = reversed && sideways && g !== null && g >= minGap;
+  if (phase === null) return null;
+
+  const price = closes[last];
+  const cur = ma[last]!;
+  const sp = slopeAt(last - SLOPE_WIN);
   return {
     price,
-    ma,
-    dist,
-    gap: g === null ? null : r2(g),
-    gapPrev: gp === null ? null : r2(gp),
-    gapTrend,
-    range20,
-    drift20,
-    reversed,
-    sideways,
-    bottom,
+    period,
+    ma: Math.round(cur),
+    dist: r2(((price - cur) / cur) * 100),
+    slope: r2(slopeAt(last)!),
+    slopePrev: sp === null ? null : r2(sp),
+    phase,
+    days: last - since + 1,
+    daysCapped: since === start && start > first,
+    line: ma.slice(-LINE_POINTS).filter((v): v is number => v != null).map(Math.round),
   };
 }

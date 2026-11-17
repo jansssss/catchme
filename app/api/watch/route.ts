@@ -1,15 +1,17 @@
 import { authed, unauthorized } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { getDaily, getQuotes, mergeLive } from "@/lib/naver";
-import { computeMetrics, DEFAULT_GAP } from "@/lib/indicators";
+import { computeTrend, daysFor } from "@/lib/indicators";
+import { getTrendPeriod } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
 
-/** 관심 종목 + 현재가 + 이평선 지표 + 알림 목록 */
+/** 관심 종목 + 현재가 + 추세 국면 + 알림 목록 */
 export async function GET() {
   if (!(await authed())) return unauthorized();
   try {
     const sql = await db();
+    const period = await getTrendPeriod();
     const [stocks, alerts] = await Promise.all([
       sql`SELECT code, name, market, buy_price FROM watchlist ORDER BY created_at`,
       sql`SELECT id, code, kind, value, active, fired_at FROM alerts ORDER BY id`,
@@ -19,13 +21,14 @@ export async function GET() {
     const out = await Promise.all(
       stocks.map(async (s) => {
         const mine = alerts.filter((a) => a.code === s.code);
-        const bottomAlert = mine.find((a) => a.kind === "bottom");
-        let metrics = null;
+        let trend = null;
+        let loaded = false;
         try {
-          const bars = mergeLive(await getDaily(s.code), quotes[s.code]);
-          metrics = computeMetrics(bars, bottomAlert ? Number(bottomAlert.value) : DEFAULT_GAP);
+          const bars = mergeLive(await getDaily(s.code, daysFor(period)), quotes[s.code]);
+          trend = computeTrend(bars, period);
+          loaded = true;
         } catch {
-          /* 지표 없이 표시 */
+          /* 추세 없이 표시 */
         }
         return {
           code: s.code,
@@ -33,7 +36,8 @@ export async function GET() {
           market: s.market,
           buyPrice: s.buy_price === null ? null : Number(s.buy_price),
           quote: quotes[s.code] ?? null,
-          metrics,
+          trend,
+          trendShort: loaded && !trend, // 상장 기간이 짧아 계산 불가
           alerts: mine.map((a) => ({
             id: a.id,
             kind: a.kind,
@@ -46,6 +50,7 @@ export async function GET() {
     );
     return Response.json({
       stocks: out,
+      trendPeriod: period,
       pushReady: !!process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY && !!process.env.VAPID_PRIVATE_KEY,
     });
   } catch (e: any) {
@@ -60,8 +65,10 @@ export async function POST(req: Request) {
     return Response.json({ error: "잘못된 종목" }, { status: 400 });
   }
   const sql = await db();
-  await sql`INSERT INTO watchlist (code, name, market) VALUES (${code}, ${name}, ${market ?? "KOSPI"})
-            ON CONFLICT (code) DO NOTHING`;
+  const added = await sql`INSERT INTO watchlist (code, name, market) VALUES (${code}, ${name}, ${market ?? "KOSPI"})
+            ON CONFLICT (code) DO NOTHING RETURNING code`;
+  // 새로 추가한 종목은 국면 전환 알림을 켠 채로 시작한다
+  if (added.length) await sql`INSERT INTO alerts (code, kind, value) VALUES (${code}, 'phase', 1)`;
   return Response.json({ ok: true });
 }
 
