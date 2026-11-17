@@ -122,7 +122,19 @@ function rangeStart(bars: Bar[], days: number) {
   return Math.max(0, i - 1);
 }
 
-export default function Chart({ code, name, quote }: { code: string; name: string; quote: Quote }) {
+export default function Chart({
+  code,
+  name,
+  quote,
+  autoOpen,
+  onAutoOpened,
+}: {
+  code: string;
+  name: string;
+  quote: Quote;
+  autoOpen?: boolean; // 데이터가 준비되면 상세 차트를 바로 연다
+  onAutoOpened?: () => void;
+}) {
   const [bars, setBars] = useState<Bar[] | null>(null);
   const [err, setErr] = useState("");
   const [range, setRange] = useState(2);
@@ -153,6 +165,24 @@ export default function Chart({ code, name, quote }: { code: string; name: strin
     };
   }, [open]);
 
+  const openDetail = useCallback(() => {
+    // 뒤로가기로 닫을 수 있게 기록을 하나 쌓는다. 실패해도 차트는 열린다
+    try {
+      history.pushState({ catchmeChart: true }, "");
+    } catch {}
+    setOpen(true);
+  }, []);
+  const closeDetail = useCallback(() => {
+    setOpen(false);
+    if (history.state?.catchmeChart) history.back();
+  }, []);
+
+  useEffect(() => {
+    if (!autoOpen || !bars) return;
+    openDetail();
+    onAutoOpened?.();
+  }, [autoOpen, bars, openDetail, onAutoOpened]);
+
   if (err) return <p className="hint">{err}</p>;
   if (!bars) return <p className="hint">차트 불러오는 중…</p>;
 
@@ -167,16 +197,11 @@ export default function Chart({ code, name, quote }: { code: string; name: strin
     <div>
       <div className="mini-top">
         <b>간단</b>
-        <span>차트를 누르면 상세 차트</span>
+        <button className="tocandle" onClick={openDetail}>
+          📊 상세 차트 (봉·이평선) ›
+        </button>
       </div>
-      <button
-        className="mini"
-        aria-label={`${name} 상세 차트 열기`}
-        onClick={() => {
-          history.pushState({ catchmeChart: true }, "");
-          setOpen(true);
-        }}
-      >
+      <button className="mini" aria-label={`${name} 상세 차트 열기`} onClick={openDetail}>
         <MiniLine bars={view} up={stats[range].chg >= 0} />
       </button>
       <div className="ranges">
@@ -187,7 +212,7 @@ export default function Chart({ code, name, quote }: { code: string; name: strin
           </button>
         ))}
       </div>
-      {open && <Detail name={name} quote={quote} daily={bars} mas={mas} saveMas={saveMas} onClose={() => history.back()} />}
+      {open && <Detail name={name} quote={quote} daily={bars} mas={mas} saveMas={saveMas} onClose={closeDetail} />}
     </div>
   );
 }

@@ -9,7 +9,7 @@ const won = (n: number) => Math.round(n).toLocaleString("ko-KR") + "원";
 /**
  * 켜져 있는 알림을 모두 검사하고, 조건이 맞으면 푸시를 보낸다.
  *  - price_up / price_down / stop : 한 번 울리면 꺼진다
- *  - phase  : 추세 국면(하락·하락 둔화·횡보·상승 전환)이 바뀔 때 울린다 (계속 유지)
+ *  - phase  : 추세 국면(하락·하락 둔화·횡보·상승)이 바뀔 때 울린다 (계속 유지)
  */
 export async function runCheck() {
   const sql = await db();

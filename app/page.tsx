@@ -36,7 +36,7 @@ const PHASES: { key: Phase; label: string; hint: string }[] = [
   { key: "down", label: "하락", hint: "관망" },
   { key: "easing", label: "하락 둔화", hint: "지켜보기" },
   { key: "flat", label: "횡보", hint: "바닥 다지기 · 주목" },
-  { key: "up", label: "상승 전환", hint: "매수 검토" },
+  { key: "up", label: "상승", hint: "매수 검토" },
 ];
 
 /** 호가 단위에 맞춰 내림 */
@@ -281,9 +281,8 @@ export default function Page() {
       )}
 
       <p className="foot">
-        추세 국면은 {trendPeriod}일선의 기울기(최근 20거래일 변화율)로 판단합니다 · 하락 = -1% 이하, 또는 오르던 선이 눕거나 현재가가 선보다
-        3% 넘게 아래로 이탈 · 하락 둔화 = 내려가지만 한 달 전보다 완만 · 횡보 = ±1% 이내에서 안정 · 상승 전환 = +1% 이상이고
-        현재가가 선 근처 이상 · 새 국면이 3거래일 이어지면 전환으로 봅니다
+        추세 국면은 {trendPeriod}일선의 기울기(최근 20거래일 변화율)로 판단합니다 · 하락 = -1% 이하 · 하락 둔화 = 내려가지만 한 달
+        전보다 완만 · 횡보 = ±1% 이내 · 상승 = +1% 이상 · 현재가 위치와 상관없이 선의 모양만 봅니다 · 새 국면이 3거래일 이어지면 전환으로 봅니다
         <br />
         시세는 네이버 금융 기준이며 장중 약 5분 간격으로 확인합니다. 투자 판단과 책임은 본인에게 있습니다.
       </p>
@@ -401,6 +400,7 @@ function Search({ have, onAdd }: { have: string[]; onAdd: (f: Found) => Promise<
 
 function Card({ s, reload, say }: { s: Stock; reload: () => Promise<void>; say: (m: string) => void }) {
   const [panel, setPanel] = useState<null | "price" | "stop" | "chart">(null);
+  const [autoDetail, setAutoDetail] = useState(false); // 추세 그래프를 눌러 상세 차트를 바로 여는 경우
   const t = s.trend;
   const price = s.quote?.price ?? t?.price ?? 0;
   const phaseAlert = s.alerts.find((a) => a.kind === "phase");
@@ -443,7 +443,15 @@ function Card({ s, reload, say }: { s: Stock; reload: () => Promise<void>; say: 
       </div>
 
       {t ? (
-        <TrendView t={t} alertOn={!!phaseAlert} onBell={togglePhase} />
+        <TrendView
+          t={t}
+          alertOn={!!phaseAlert}
+          onBell={togglePhase}
+          onChart={() => {
+            setPanel("chart");
+            setAutoDetail(true);
+          }}
+        />
       ) : (
         s.trendShort && <div className="trend none">상장 기간이 짧아 추세를 계산할 수 없습니다</div>
       )}
@@ -536,33 +544,57 @@ function Card({ s, reload, say }: { s: Stock; reload: () => Promise<void>; say: 
       )}
       {panel === "chart" && (
         <div className="panel">
-          <Chart code={s.code} name={s.name} quote={s.quote} />
+          <Chart code={s.code} name={s.name} quote={s.quote} autoOpen={autoDetail} onAutoOpened={() => setAutoDetail(false)} />
         </div>
       )}
     </section>
   );
 }
 
-function TrendView({ t, alertOn, onBell }: { t: Trend; alertOn: boolean; onBell: () => void }) {
+function TrendView({ t, alertOn, onBell, onChart }: { t: Trend; alertOn: boolean; onBell: () => void; onChart: () => void }) {
   const idx = PHASES.findIndex((p) => p.key === t.phase);
-  const W = 150, H = 60, P = 6;
+  // 기준선을 약 1년치 길게 그리고, 맨 오른쪽 최근 구간을 상자로 강조한다
+  // — 내려오다 눕는지, 고개를 드는지가 선 모양 그대로 보이도록
+  const W = 320, H = 104, PX = 8, PT = 20, PB = 10;
   const n = t.line.length;
+  const RECENT = Math.min(40, n - 1); // 강조할 최근 구간(약 2달)
   let lo = Math.min(...t.line), hi = Math.max(...t.line);
   // 거의 수평인 선이 과장되어 보이지 않도록 세로 범위를 최소 8%로 잡는다
   const mid = (lo + hi) / 2;
   const half = Math.max((hi - lo) / 2, mid * 0.04);
   lo = mid - half;
   hi = mid + half;
-  const x = (i: number) => P + (i / Math.max(1, n - 1)) * (W - 2 * P);
-  const y = (v: number) => P + (1 - (v - lo) / (hi - lo)) * (H - 2 * P);
-  const d = t.line.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
-  // 하락으로 분류됐지만 선이 아직 내려가지 않는 경우: 고점에서 꺾이는 중
+  const x = (i: number) => PX + (i / Math.max(1, n - 1)) * (W - 2 * PX);
+  const y = (v: number) => PT + (1 - (v - lo) / (hi - lo)) * (H - PT - PB);
+  const seg = (from: number) =>
+    t.line
+      .slice(from)
+      .map((v, i) => `${i ? "L" : "M"}${x(i + from).toFixed(1)},${y(v).toFixed(1)}`)
+      .join("");
+  const cutI = n - 1 - RECENT;
+  const dOld = t.line
+    .slice(0, cutI + 1)
+    .map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`)
+    .join("");
+  const dNew = seg(cutI);
+  const boxX = x(cutI) - 3;
+  // 같은 횡보라도 내려와서 누운 것(바닥)과 올라가서 누운 것(고점)은 뜻이 다르다
+  const rawLo = Math.min(...t.line), rawHi = Math.max(...t.line);
+  const pos = rawHi > rawLo ? (t.line[n - 1] - rawLo) / (rawHi - rawLo) : 0.5; // 최근 1년 범위 안에서 선의 현재 높이
   const hint =
-    t.phase === "down" && t.slope > -1
-      ? t.slope >= 1
-        ? "선 아래로 이탈 · 관망"
-        : "꺾이는 중 · 관망"
-      : PHASES[idx].hint;
+    t.phase === "flat"
+      ? pos >= 0.6
+        ? "오르던 선이 눕는 중 · 주의"
+        : pos <= 0.4
+          ? "바닥 다지기 · 주목"
+          : "방향 탐색 · 지켜보기"
+      : t.phase === "up"
+        ? t.dist < -3
+          ? "주가는 선 아래 · 주의"
+          : t.days <= 40 && !t.daysCapped && pos <= 0.5
+            ? "바닥에서 돌아서는 중 · 매수 검토"
+            : "상승 지속"
+        : PHASES[idx].hint;
   const dir = t.slope >= 1 ? "오르는 중" : t.slope <= -1 ? "내려가는 중" : "거의 수평";
 
   return (
@@ -575,11 +607,19 @@ function TrendView({ t, alertOn, onBell }: { t: Trend; alertOn: boolean; onBell:
           </li>
         ))}
       </ol>
-      <div className="tbody">
-        <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${t.period}일선 최근 흐름`}>
-          <path d={d} fill="none" stroke="var(--ph)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-          <circle cx={x(n - 1)} cy={y(t.line[n - 1])} r="4" fill="var(--ph)" />
+      <button className="tspark" onClick={onChart} aria-label="상세 차트 열기">
+        <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${t.period}일선 최근 1년 흐름`}>
+          <rect x={boxX} y="3" width={W - boxX - 2} height={H - 6} rx="8" fill="var(--ph)" fillOpacity="0.1" stroke="var(--ph)" strokeOpacity="0.7" strokeWidth="1.2" />
+          <text x={boxX + 7} y="16" fontSize="10" fontWeight="700" fill="var(--ph)">
+            최근 2달
+          </text>
+          <path d={dOld} fill="none" stroke="var(--muted)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+          <path d={dNew} fill="none" stroke="var(--ph)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx={x(n - 1)} cy={y(t.line[n - 1])} r="5" fill="var(--ph)" />
         </svg>
+        <span>{t.period}일선 최근 1년 · 누르면 상세 차트</span>
+      </button>
+      <div className="tbody">
         <div className="ttxt">
           <div className="th">
             <b>{PHASES[idx].label}</b>

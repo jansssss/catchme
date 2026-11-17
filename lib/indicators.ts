@@ -4,18 +4,17 @@ export const DEFAULT_TREND_PERIOD = 224; // 추세를 판단하는 기준 이평
 export const SLOPE_WIN = 20; // 기울기 = 기준선이 최근 20거래일 동안 움직인 비율(%)
 export const FLAT_PCT = 1; // 기울기가 ±1% 안이면 수평(횡보)
 export const EASE_MIN = 0.5; // 한 달 전보다 이만큼(%p) 이상 완만해져야 "하락 둔화"
-export const BREAK_PCT = 3; // 선이 올라도 현재가가 선보다 이만큼(%) 넘게 아래면 꺾인 것으로 본다
 export const CONFIRM_BARS = 3; // 새 국면이 3거래일 이어져야 바뀐 것으로 본다
 const LOOKBACK = 250; // 국면이 며칠째인지 거슬러 볼 최대 거래일
-const LINE_POINTS = 120; // 미리보기로 그릴 기준선 길이(약 6개월)
+const LINE_POINTS = 250; // 미리보기로 그릴 기준선 길이(약 1년) — 내려오다 눕는 모양이 보이도록 길게
 
-/** 하락 → 하락 둔화 → 횡보 → 상승 전환 */
+/** 하락 → 하락 둔화 → 횡보 → 상승 */
 export type Phase = "down" | "easing" | "flat" | "up";
 export const PHASE_LABEL: Record<Phase, string> = {
   down: "하락",
   easing: "하락 둔화",
   flat: "횡보",
-  up: "상승 전환",
+  up: "상승",
 };
 
 export type Trend = {
@@ -63,15 +62,10 @@ export function computeTrend(bars: Bar[], period = DEFAULT_TREND_PERIOD): Trend 
   const rawAt = (i: number): Phase | null => {
     const s = slopeAt(i);
     if (s === null) return null;
+    // 국면은 기준선의 모양(기울기)만으로 정한다 — 화면에 그리는 선과 항상 같은 이야기를 하도록
+    if (s >= FLAT_PCT) return "up";
+    if (s > -FLAT_PCT) return "flat";
     const p = slopeAt(i - SLOPE_WIN);
-    if (s >= FLAT_PCT) {
-      // 선은 아직 오르지만 가격이 선 아래로 크게 내려왔으면 고점에서 꺾인 것 → 하락으로 본다
-      return ((closes[i] - ma[i]!) / ma[i]!) * 100 >= -BREAK_PCT ? "up" : "down";
-    }
-    if (s > -FLAT_PCT) {
-      // 수평이라도 오르던 선이 눕는 중(기울기가 줄어드는 중)이면 바닥이 아니라 꺾이는 것
-      return p !== null && s - p <= -EASE_MIN ? "down" : "flat";
-    }
     return p !== null && s - p >= EASE_MIN && s >= p * 0.6 ? "easing" : "down";
   };
 
@@ -119,6 +113,5 @@ export function computeTrend(bars: Bar[], period = DEFAULT_TREND_PERIOD): Trend 
     phase,
     days: last - since + 1,
     daysCapped: since === start && start > first,
-    line: ma.slice(-LINE_POINTS).filter((v): v is number => v != null).map(Math.round),
-  };
+    line: ma.slice(-LINE_POINTS).filter((v): v is number => v != null).map(Math.round),  };
 }
